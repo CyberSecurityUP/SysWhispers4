@@ -214,6 +214,9 @@ class SysWhispers4:
 
 #include <windows.h>
 #include <winternl.h>
+#ifdef __GNUC__
+# include <intrin.h>  /* __readgsqword for MinGW-w64 */
+#endif
 
 /* =========================================================================
  *  SW4 -- NT type definitions not in winternl.h / ntdef.h
@@ -235,7 +238,8 @@ class SysWhispers4:
 # define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
 #endif
 
-/* ---------- Process/Thread information classes --------------------------- */
+/* ---------- Process/Thread information classes (winternl.h on MinGW) ----- */
+#ifndef __MINGW32__
 #ifndef _PROCESSINFOCLASS
 typedef enum _PROCESSINFOCLASS {{
     ProcessBasicInformation           = 0,
@@ -270,6 +274,7 @@ typedef enum _THREADINFOCLASS {{
     ThreadHideFromDebugger            = 17,
 }} THREADINFOCLASS;
 #endif
+#endif /* !__MINGW32__ */
 
 /* ---------- Memory information class ------------------------------------- */
 #ifndef _MEMORY_INFORMATION_CLASS
@@ -284,7 +289,8 @@ typedef enum _MEMORY_INFORMATION_CLASS {{
 }} MEMORY_INFORMATION_CLASS;
 #endif
 
-/* ---------- System information class ------------------------------------- */
+/* ---------- System information class (winternl.h on MinGW) --------------- */
+#ifndef __MINGW32__
 #ifndef _SYSTEM_INFORMATION_CLASS
 typedef enum _SYSTEM_INFORMATION_CLASS {{
     SystemBasicInformation            = 0,
@@ -297,7 +303,7 @@ typedef enum _SYSTEM_INFORMATION_CLASS {{
 }} SYSTEM_INFORMATION_CLASS;
 #endif
 
-/* ---------- Object information class ------------------------------------- */
+/* ---------- Object information class (winternl.h on MinGW) --------------- */
 #ifndef _OBJECT_INFORMATION_CLASS
 typedef enum _OBJECT_INFORMATION_CLASS {{
     ObjectBasicInformation            = 0,
@@ -305,8 +311,10 @@ typedef enum _OBJECT_INFORMATION_CLASS {{
     ObjectTypeInformation             = 2,
 }} OBJECT_INFORMATION_CLASS;
 #endif
+#endif /* !__MINGW32__ */
 
-/* ---------- Token types -------------------------------------------------- */
+/* ---------- Token types (winnt.h on MinGW) -------------------------------- */
+#ifndef __MINGW32__
 #ifndef _TOKEN_INFORMATION_CLASS
 typedef enum _TOKEN_INFORMATION_CLASS {{
     TokenUser                         = 1,
@@ -345,6 +353,7 @@ typedef enum _TOKEN_TYPE {{
     TokenImpersonation = 2,
 }} TOKEN_TYPE;
 #endif
+#endif /* !__MINGW32__ */
 
 /* ---------- Section / MapView types --------------------------------------- */
 #ifndef _SECTION_INHERIT
@@ -354,12 +363,14 @@ typedef enum _SECTION_INHERIT {{
 }} SECTION_INHERIT;
 #endif
 
-#ifndef _WAIT_TYPE
+#ifndef __MINGW32__  /* ntdef.h on MinGW */
+#ifndef _WAIT_TYPE  /* ntdef.h on MinGW */
 typedef enum _WAIT_TYPE {{
     WaitAll  = 0,
     WaitAny  = 1,
 }} WAIT_TYPE;
 #endif
+#endif /* !__MINGW32__ */
 
 /* ---------- PS attributes / create info ---------------------------------- */
 #ifndef _PS_ATTRIBUTE_LIST
@@ -421,20 +432,27 @@ typedef VOID (NTAPI *PPS_APC_ROUTINE)(
     PVOID ApcArgument3
 );
 
+#ifndef __MINGW32__  /* winnt.h on MinGW */
+#ifndef _TOKEN_PRIVILEGES
 typedef struct _TOKEN_PRIVILEGES {{
     DWORD             PrivilegeCount;
     LUID_AND_ATTRIBUTES Privileges[ANYSIZE_ARRAY];
 }} TOKEN_PRIVILEGES, *PTOKEN_PRIVILEGES;
+#endif
+#endif /* !__MINGW32__ */
 
-/* ---------- Client ID ------------------------------------------------------ */
+/* ---------- Client ID (winternl.h on MinGW) -------------------------------- */
+#ifndef __MINGW32__
 #ifndef _CLIENT_ID
 typedef struct _CLIENT_ID {{
     PVOID UniqueProcess;
     PVOID UniqueThread;
 }} CLIENT_ID, *PCLIENT_ID;
 #endif
+#endif /* !__MINGW32__ */
 
-/* ---------- IO Status Block ----------------------------------------------- */
+/* ---------- IO Status Block (winternl.h on MinGW) ------------------------- */
+#ifndef __MINGW32__
 #ifndef _IO_STATUS_BLOCK
 typedef struct _IO_STATUS_BLOCK {{
     union {{
@@ -444,8 +462,10 @@ typedef struct _IO_STATUS_BLOCK {{
     ULONG_PTR Information;
 }} IO_STATUS_BLOCK, *PIO_STATUS_BLOCK;
 #endif
+#endif /* !__MINGW32__ */
 
-/* ---------- Security QoS -------------------------------------------------- */
+/* ---------- Security QoS (winnt.h on MinGW) -------------------------------- */
+#ifndef __MINGW32__
 #ifndef _SECURITY_QUALITY_OF_SERVICE
 typedef struct _SECURITY_QUALITY_OF_SERVICE {{
     DWORD                        Length;
@@ -454,14 +474,17 @@ typedef struct _SECURITY_QUALITY_OF_SERVICE {{
     BOOLEAN                      EffectiveOnly;
 }} SECURITY_QUALITY_OF_SERVICE, *PSECURITY_QUALITY_OF_SERVICE;
 #endif
+#endif /* !__MINGW32__ */
 
-/* ---------- Timer types (for sleep encryption) ----------------------------- */
+/* ---------- Timer types (ntdef.h on MinGW) -------------------------------- */
+#ifndef __MINGW32__
 #ifndef _TIMER_TYPE
 typedef enum _TIMER_TYPE {{
     NotificationTimer = 0,
     SynchronizationTimer = 1,
 }} TIMER_TYPE;
 #endif
+#endif /* !__MINGW32__ */
 
 /* =========================================================================
  *  SW4 Internal structures used by the runtime
@@ -2265,76 +2288,91 @@ OPTION DOTNAME
         header = f"""\
 /*
  * {self.cfg.out_file}_stubs.c -- generated by SysWhispers4
- * MinGW/Clang inline assembly stubs (GAS AT&T syntax -> Intel via -masm=intel)
+ * MinGW/GAS x64 Windows syscall stubs.
  *
- * Compile with: -masm=intel
+ * Uses top-level __asm__() with .intel_syntax noprefix and RIP-relative
+ * addressing.  __declspec(naked) is intentionally NOT used because GCC
+ * silently ignores it on x86-64, leaving a function prologue that corrupts
+ * the stack before the indirect jmp to the ntdll gadget.
  */
 #include "{self.cfg.out_file}.h"
-
-extern DWORD {p}SsnTable[];
 """
+        header += f"\nextern DWORD {p}SsnTable[];\n"
         if method in (InvocationMethod.Indirect, InvocationMethod.Randomized):
             header += f"extern void* {p}SyscallAddrTable[];\n"
+        if method == InvocationMethod.Randomized:
+            header += f"extern void* {p}GadgetPool[];\n"
 
-        stubs = [header]
+        # One global asm block; syntax switch is contained inside it.
+        asm_lines = ["__asm__ ("]
+        asm_lines.append('    ".intel_syntax noprefix\\n\\t"')
+
         for idx, proto in enumerate(self._prototypes):
-            stubs.append(self._gas_stub(proto, idx, p, method, egg_val))
+            fname = f"{p}{proto.name}"
+            asm_lines.append('    "\\n\\t"')
+            asm_lines.extend(self._gas_stub(fname, idx, p, method, egg_val))
 
-        return "\n".join(stubs)
+        asm_lines.append('    "\\n\\t"')
+        asm_lines.append('    ".att_syntax prefix\\n\\t"')
+        asm_lines.append(");")
 
-    def _gas_stub(self, proto: SyscallPrototype, idx: int, p: str,
-                  method: InvocationMethod, egg: int) -> str:
-        fname = f"{p}{proto.name}"
-        param_list = ", ".join(p_arg.c_declaration() for p_arg in proto.params)
-        func_sig = f"__declspec(naked) {proto.return_type} NTAPI {fname}({param_list})"
+        return header + "\n" + "\n".join(asm_lines) + "\n"
+
+    def _gas_stub(self, fname: str, idx: int, p: str,
+                  method: InvocationMethod, egg: int) -> list:
+        """Return a list of quoted asm string lines (for the global __asm__ block)
+        that implement one syscall stub with RIP-relative table access."""
+        ssn_offset = idx * 4
+        addr_offset = idx * 8
+
+        preamble = [
+            f'    "  .globl {fname}\\n\\t"',
+            f'    "  .def {fname}; .scl 2; .type 32; .endef\\n\\t"',
+            f'    "{fname}:\\n\\t"',
+            f'    "    mov r10, rcx\\n\\t"',
+            f'    "    lea rcx, [rip + {p}SsnTable]\\n\\t"',
+            f'    "    mov eax, dword ptr [rcx + {ssn_offset}]\\n\\t"',
+        ]
+        if self.cfg.encrypt_ssn:
+            key = self._xor_key()
+            preamble.append(f'    "    xor eax, 0x{key:08X}\\n\\t"')
 
         if method == InvocationMethod.Embedded:
-            asm_body = f"""\
-    __asm__ __volatile__ (
-        "mov r10, rcx\\n"
-        "mov eax, [{p}SsnTable + {idx * 4}]\\n"
-        "syscall\\n"
-        "ret\\n"
-        ::: "memory"
-    );"""
+            return preamble + [
+                '    "    syscall\\n\\t"',
+                '    "    ret\\n\\t"',
+            ]
         elif method == InvocationMethod.Indirect:
-            asm_body = f"""\
-    __asm__ __volatile__ (
-        "mov r10, rcx\\n"
-        "mov eax, [{p}SsnTable + {idx * 4}]\\n"
-        "jmp qword ptr [{p}SyscallAddrTable + {idx * 8}]\\n"
-        ::: "memory"
-    );"""
+            return preamble + [
+                f'    "    lea rcx, [rip + {p}SyscallAddrTable]\\n\\t"',
+                f'    "    jmp qword ptr [rcx + {addr_offset}]\\n\\t"',
+            ]
         elif method == InvocationMethod.Randomized:
-            asm_body = f"""\
-    __asm__ __volatile__ (
-        "mov r10, rcx\\n"
-        "mov r11, rdx\\n"
-        "rdtsc\\n"
-        "xor eax, edx\\n"
-        "and eax, 63\\n"
-        "lea rcx, [{p}GadgetPool]\\n"
-        "mov rcx, qword ptr [rcx + rax*8]\\n"
-        "mov rdx, r11\\n"
-        "mov eax, [{p}SsnTable + {idx * 4}]\\n"
-        "jmp rcx\\n"
-        ::: "memory"
-    );"""
+            # rdtsc trashes rdx; preserve it in r11 before calling rdtsc.
+            decrypt = ([f'    "    xor eax, 0x{self._xor_key():08X}\\n\\t"']
+                       if self.cfg.encrypt_ssn else [])
+            return [
+                f'    "  .globl {fname}\\n\\t"',
+                f'    "  .def {fname}; .scl 2; .type 32; .endef\\n\\t"',
+                f'    "{fname}:\\n\\t"',
+                f'    "    mov r10, rcx\\n\\t"',
+                f'    "    mov r11, rdx\\n\\t"',
+                f'    "    rdtsc\\n\\t"',
+                f'    "    xor eax, edx\\n\\t"',
+                f'    "    and eax, 63\\n\\t"',
+                f'    "    lea rcx, [rip + {p}GadgetPool]\\n\\t"',
+                f'    "    mov rcx, qword ptr [rcx + rax*8]\\n\\t"',
+                f'    "    mov rdx, r11\\n\\t"',
+                f'    "    lea r11, [rip + {p}SsnTable]\\n\\t"',
+                f'    "    mov eax, dword ptr [r11 + {ssn_offset}]\\n\\t"',
+            ] + decrypt + [
+                f'    "    jmp rcx\\n\\t"',
+            ]
         else:
-            # Egg: GAS DB equivalent
+            # Egg: place 8-byte egg pattern; SW4HatchEggs() patches it to syscall+NOPs
             egg_bytes_list = list(egg.to_bytes(8, "little"))
-            asm_body = f"""\
-    __asm__ __volatile__ (
-        "mov r10, rcx\\n"
-        "mov eax, [{p}SsnTable + {idx * 4}]\\n"
-        ".byte {', '.join(str(b) for b in egg_bytes_list)}\\n"  /* EGG */
-        "ret\\n"
-        ::: "memory"
-    );"""
-
-        return f"""\
-{func_sig} {{
-{asm_body}
-}}
-
-"""
+            byte_str = ", ".join(str(b) for b in egg_bytes_list)
+            return preamble + [
+                f'    "    .byte {byte_str}\\n\\t"',
+                f'    "    ret\\n\\t"',
+            ]
