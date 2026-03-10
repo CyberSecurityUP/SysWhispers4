@@ -1,0 +1,35 @@
+# NMakefile — MSVC x64 build
+# Usage (from a Visual Studio x64 Developer Command Prompt):
+#   nmake /f NMakefile
+#
+# Requires ml64 (MASM) from the Visual Studio toolchain.
+# The .asm file name clashes with the .c file name for the obj output, so
+# the assembler object is explicitly written to SW4_msvcSyscalls_asm.obj.
+
+CC     = cl
+ASM    = ml64
+LINK   = link
+
+CFLAGS = /nologo /W4 /O2 /MT /utf-8
+AFLAGS = /nologo /c
+
+TARGET   = example_injection.exe
+C_OBJS   = example_injection.obj SW4_msvcSyscalls_c.obj
+ASM_OBJ  = SW4_msvcSyscalls.obj
+
+all: $(TARGET)
+
+$(TARGET): $(C_OBJS) $(ASM_OBJ)
+	$(LINK) /nologo /subsystem:console /out:$(TARGET) $(C_OBJS) $(ASM_OBJ)
+
+example_injection.obj: example_injection.c SW4_msvcSyscalls.h SW4_msvcSyscalls_Types.h
+	$(CC) $(CFLAGS) /c /Fo$@ example_injection.c
+
+SW4_msvcSyscalls_c.obj: SW4_msvcSyscalls.c SW4_msvcSyscalls.h SW4_msvcSyscalls_Types.h
+	$(CC) $(CFLAGS) /c /FoSW4_msvcSyscalls_c.obj SW4_msvcSyscalls.c
+
+SW4_msvcSyscalls.obj: SW4_msvcSyscalls.asm
+	$(ASM) $(AFLAGS) /Fo$@ SW4_msvcSyscalls.asm
+
+clean:
+	del /Q $(TARGET) *.obj 2>nul
